@@ -7,7 +7,7 @@ from sklearn.metrics import accuracy_score, classification_report
 from concurrent.futures import ThreadPoolExecutor
 
 class LLMSentimentAnalyzer:
-    def __init__(self, model_name="qwen2.5-coder:7b", temperature=0.0):
+    def __init__(self, model_name="gemma3:1b", temperature=0.0):
         """
         Khởi tạo kết nối với model chạy local qua Ollama và chuẩn bị sẵn các chains.
         """
@@ -73,7 +73,6 @@ class LLMSentimentAnalyzer:
                 results = list(tqdm(executor.map(predict_func, X_test), total=len(X_test), desc="Predicting (Parallel)"))
                 y_pred.extend(results)
         else:
-            # Chạy tuần tự như cũ
             for text in tqdm(X_test, desc="Predicting (Sequential)"):
                 y_pred.append(predict_func(text))
             
