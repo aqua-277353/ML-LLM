@@ -4,132 +4,80 @@ from tqdm import tqdm
 from langchain_community.llms import Ollama
 from langchain_core.prompts import PromptTemplate
 from sklearn.metrics import accuracy_score, classification_report
-
+from concurrent.futures import ThreadPoolExecutor
 
 class LLMSentimentAnalyzer:
-
-    def __init__(self, model_name="llama3", temperature=0.0):
-
+    def __init__(self, model_name="qwen2.5-coder:7b", temperature=0.0):
+        """
+        Khởi tạo kết nối với model chạy local qua Ollama và chuẩn bị sẵn các chains.
+        """
         print(f"Đang khởi tạo kết nối với Ollama model: {model_name}...")
+        self.llm = Ollama(model=model_name, temperature=temperature)
+        
+        # TỐI ƯU HÓA: Khởi tạo Prompt và Chain một lần duy nhất tại đây
+        self.zero_shot_chain = PromptTemplate(
+            input_variables=["review"], 
+            template="""You are an expert data analyst evaluating car reviews.
+        Classify the sentiment of the following car review as strictly 'Pos' (Positive) or 'Neg' (Negative).
+        Output ONLY the word 'Pos' or 'Neg'. Do not provide any explanations.
 
-        # Giới hạn token output để tăng tốc
-        self.llm = Ollama(
-            model=model_name,
-            temperature=temperature,
-            num_predict=5
-        )
+        Review: "{review}"
+        Sentiment:"""
+        ) | self.llm
 
-        # Zero-shot prompt
-        zero_template = """You are an expert data analyst evaluating car reviews.
-Classify each review sentiment as 'Pos' or 'Neg'.
+        self.few_shot_chain = PromptTemplate(
+            input_variables=["review"], 
+            template="""You are an expert data analyst evaluating car reviews.
+        Classify the sentiment of the following car review as strictly 'Pos' or 'Neg'.
 
-Return ONLY the result in this format:
-1: Pos
-2: Neg
+        Here are some examples:
+        Review: "The car broke down after 2 weeks, terrible customer service."
+        Sentiment: Neg
 
-Reviews:
-{reviews}
+        Review: "I absolutely love the fuel efficiency and the sleek interior design."
+        Sentiment: Pos
 
-Sentiments:"""
-
-        # Few-shot prompt
-        few_template = """You are an expert data analyst evaluating car reviews.
-Classify each review sentiment as 'Pos' or 'Neg'.
-
-Examples:
-Review: The car broke down after 2 weeks.
-Sentiment: Neg
-
-Review: I absolutely love the fuel efficiency.
-Sentiment: Pos
-
-Now classify the following reviews.
-
-Return format:
-1: Pos
-2: Neg
-
-Reviews:
-{reviews}
-
-Sentiments:"""
-
-        self.zero_prompt = PromptTemplate(
-            input_variables=["reviews"],
-            template=zero_template
-        )
-
-        self.few_prompt = PromptTemplate(
-            input_variables=["reviews"],
-            template=few_template
-        )
-
-        self.zero_chain = self.zero_prompt | self.llm
-        self.few_chain = self.few_prompt | self.llm
-
-
+        Now classify this review:
+        Review: "{review}"
+        Sentiment:"""
+        ) | self.llm
+        
     def _parse_output(self, text):
-
-        results = re.findall(r'\b(Pos|Neg)\b', text, re.IGNORECASE)
-
-        if results:
-            return [r.capitalize() for r in results]
-
-        return ["Unknown"]
-
-
-    def _batch_reviews(self, texts):
-
-        formatted = ""
-        for i, t in enumerate(texts, 1):
-            formatted += f"{i}. {t}\n"
-
-        return formatted
-
+        match = re.search(r'\b(Pos|Neg)\b', text, re.IGNORECASE)
+        if match:
+            return match.group(1).capitalize()
+        return "Unknown"
 
     def predict_zero_shot(self, text):
-
-        batch = self._batch_reviews([text])
-        raw = self.zero_chain.invoke({"reviews": batch})
-        return self._parse_output(raw)[0]
-
+        raw_response = self.zero_shot_chain.invoke({"review": text})
+        return self._parse_output(raw_response)
 
     def predict_few_shot(self, text):
+        raw_response = self.few_shot_chain.invoke({"review": text})
+        return self._parse_output(raw_response)
 
-        batch = self._batch_reviews([text])
-        raw = self.few_chain.invoke({"reviews": batch})
-        return self._parse_output(raw)[0]
-
-
-    def evaluate_dataset(self, X_test, y_test, strategy="zero_shot", batch_size=8):
-
+    def evaluate_dataset(self, X_test, y_test, strategy="zero_shot", batch_mode="sequential", max_workers=4):
+        """
+        Chạy dự đoán trên tập test. Hỗ trợ chạy song song qua tham số batch_mode.
+        """
         y_pred = []
+        print(f"Đang chạy LLM inference: Chiến lược={strategy} | Chế độ={batch_mode}...")
+        
+        # Xác định hàm dự đoán dựa trên chiến lược
+        predict_func = self.predict_zero_shot if strategy == "zero_shot" else self.predict_few_shot
 
-        print(f"Đang chạy LLM inference với chiến lược: {strategy}...")
-
-        if strategy == "zero_shot":
-            chain = self.zero_chain
-        elif strategy == "few_shot":
-            chain = self.few_chain
+        if batch_mode == "parallel":
+            # Sử dụng ThreadPoolExecutor để chạy song song
+            with ThreadPoolExecutor(max_workers=max_workers) as executor:
+                # Hàm map sẽ giữ nguyên thứ tự kết quả tương ứng với X_test
+                results = list(tqdm(executor.map(predict_func, X_test), total=len(X_test), desc="Predicting (Parallel)"))
+                y_pred.extend(results)
         else:
-            raise ValueError("Chiến lược không hợp lệ.")
-
-        for i in tqdm(range(0, len(X_test), batch_size), desc="Predicting"):
-
-            batch_texts = X_test[i:i + batch_size]
-
-            formatted_reviews = self._batch_reviews(batch_texts)
-
-            raw_response = chain.invoke({"reviews": formatted_reviews})
-
-            preds = self._parse_output(raw_response)
-
-            if len(preds) < len(batch_texts):
-                preds += ["Unknown"] * (len(batch_texts) - len(preds))
-
-            y_pred.extend(preds[:len(batch_texts)])
-
+            # Chạy tuần tự như cũ
+            for text in tqdm(X_test, desc="Predicting (Sequential)"):
+                y_pred.append(predict_func(text))
+            
         acc = accuracy_score(y_test, y_pred)
         report = classification_report(y_test, y_pred)
-
+        
         return y_pred, acc, report
