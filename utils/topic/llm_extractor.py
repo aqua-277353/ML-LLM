@@ -89,7 +89,7 @@ class DirectPromptingExtractor:
         return [kw for kw, _ in Counter(flat).most_common()]
 
     def refine_topics(self, raw_aspects: list[str],
-                      n_final_topics: int = 5) -> list[str]:
+                      n_final_topics: int = 4) -> list[str]:
         keywords_str = ", ".join(raw_aspects[:50])
         raw = self._call_llm(
             self._REFINE_PROMPT.format(n=n_final_topics, keywords=keywords_str)
@@ -125,7 +125,7 @@ class EmbeddingClusteringExtractor:
 
     def __init__(
         self,
-        n_clusters: int = 5,
+        n_clusters: int = 4,
         embed_model: str = "all-MiniLM-L6-v2",   # 80 MB, very fast
         llm_model: str = "llama3.2:3b",
         sample_per_cluster: int = 5,
@@ -210,14 +210,16 @@ class EmbeddingClusteringExtractor:
         return self
 
     def get_results(self, texts: list[str]) -> pd.DataFrame:
-        """Return a DataFrame with columns: text | cluster_id | topic."""
-        if self.labels_ is None:
-            raise RuntimeError("Call fit() first.")
-        return pd.DataFrame({
-            "text":       texts,
-            "cluster_id": self.labels_,
-            "topic":      [self.cluster_names_[c] for c in self.labels_],
-        })
+            """Return a DataFrame with columns: STT | cluster_id | topic | text."""
+            if self.labels_ is None:
+                raise RuntimeError("Call fit() first.")
+
+            return pd.DataFrame({
+                "STT":        range(1, len(texts) + 1),                     
+                "cluster_id": self.labels_,                                 
+                "topic":      [self.cluster_names_[c] for c in self.labels_],
+                "text":       texts,                                         
+            })
 
     def topic_summary(self) -> dict[str, int]:
         """{ topic_name: count } sorted by count desc."""
